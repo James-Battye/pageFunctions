@@ -1,8 +1,8 @@
 # 🧠 pageFunctions
 
-A lightweight JavaScript lifecycle manager for [Webflow](https://webflow.com) and [Barba.js](https://barba.js.org) that lets you run scoped component logic cleanly across page transitions — using nothing but script tags.
+A lightweight JavaScript lifecycle manager for component-based websites built in tools like Webflow — without any bundlers, frameworks, or external dependencies.
 
-No bundler. No CDN. No external tooling. Just plain JavaScript and predictable behavior.
+It gives you a clear, reliable way to define, register, and execute JavaScript functions across any DOM lifecycle — including transitions, dynamic content loads, or runtime injections.
 
 ---
 
@@ -10,16 +10,15 @@ No bundler. No CDN. No external tooling. Just plain JavaScript and predictable b
 
 ### 1. Install `pageFunctions`
 
-Paste this **into your Webflow Project Settings → `<head>` tag**:
+Add this **to your Webflow Project Settings → `<head>` tag**:
 
 ```html
-<!-- pageFunctions Core (v0.0.2) -->
 <script>
-  // Paste the full script here (see `pageFunctions v0.0.2`)
+  // Paste the full pageFunctions v0.0.2 script here
 </script>
 ```
 
-Then, **add this before the closing `</body>` tag**:
+Add this **before the closing `</body>` tag**:
 
 ```html
 <script>
@@ -29,9 +28,9 @@ Then, **add this before the closing `</body>` tag**:
 
 ---
 
-### 2. Register Component Logic in `<script>` Tags
+### 2. Register JavaScript Functions Inside Script Tags
 
-Embed scripts inside Webflow HTML blocks where your components live:
+Use a standard HTML embed or `<script>` block wherever your component is defined:
 
 ```html
 <script>
@@ -54,134 +53,165 @@ Embed scripts inside Webflow HTML blocks where your components live:
 
 ---
 
-### 3. Run It After Barba Transitions
+## 📘 API Reference
 
-In your Barba `afterEnter` hook:
+### `pageFunctions.addFunction(id, fn, level = 0)`
 
-```js
-barba.hooks.afterEnter(() => {
-  pageFunctions.refresh(); // auto-runs functions
-});
-```
+Registers a function that will be executed once — when `.runFunctions()` is called.
 
-To defer `.runFunctions()` manually:
+#### Parameters
 
-```js
-pageFunctions.refresh(false); // just scan script tags
-pageFunctions.runFunctions(); // run them later
-```
+| Param     | Type       | Description                                                                 |
+|-----------|------------|-----------------------------------------------------------------------------|
+| `id`      | `string`   | A unique identifier for this function. Re-registering the same ID replaces it. |
+| `fn`      | `function` | The actual function you want to run. Can be `async`.                         |
+| `level`   | `number`   | Determines when the function runs relative to others (see below).           |
 
 ---
 
-### 4. Prevent Some Scripts from Re-Running
+### 🧭 Levels Explained
 
-For one-time scripts (like homepage loaders or initializers), use `data-prevent-refresh`:
+`pageFunctions` groups functions by level and runs them **sequentially**, like a waterfall:
+
+- **Level 0 runs first**, then **Level 1**, then **Level 2**, and so on.
+- **All functions in a level — including async ones — must complete before moving to the next level.**
+- Levels give you **temporal control**: use them when a function depends on a previous group completing.
+
+#### ✅ Best Practices for Levels
+
+- If your function is **immediate** (no animations, no loading, no async), use **`level 0`**.
+- Only increase the level **if your function depends on something completing in a lower level.**
+- **Do not assign random levels just to "force order"** — it creates misleading dependency chains and debugging confusion.
+
+---
+
+### `pageFunctions.runFunctions()`
+
+Executes all registered functions that haven't yet run — grouped by level.
+
+- Only runs functions that have **not already been executed**
+- Async functions are **awaited** before moving on
+- Can be called multiple times safely
+
+---
+
+### `pageFunctions.refresh(autoRun = true)`
+
+Evaluates new `<script>` tags in the DOM and runs any new logic you've added via `.addFunction()`.
+
+#### Why `refresh()` exists
+
+Many modern sites inject HTML dynamically (via CMS filters, pagination, animation transitions, etc). Those new HTML blocks often contain component-level `<script>` tags that won’t automatically run.
+
+`.refresh()` solves that by:
+
+- Scanning the page for **new inline `<script>` tags**
+- Running them **once** (tracked with `data-page-fn-executed`)
+- Re-registering any `addFunction()` calls it finds
+- Optionally calling `.runFunctions()` immediately afterward
+
+#### Parameters
+
+| Param       | Type      | Default | Description                                                   |
+|-------------|-----------|---------|---------------------------------------------------------------|
+| `autoRun`   | `boolean` | `true`  | Whether to immediately call `runFunctions()` after refreshing |
+
+---
+
+### Optional: Prevent a Script from Re-running
+
+To skip re-execution during refreshes (e.g. intro animations, initializations), use:
 
 ```html
 <script data-prevent-refresh>
-  pageFunctions.addFunction("loader", () => {
-    console.log("🏁 Homepage loader");
+  pageFunctions.addFunction("loaderIntro", () => {
+    console.log("This only runs once on first load");
   }, 0);
 </script>
 ```
 
-This prevents execution during `.refresh()` but still runs on first load.
+---
+
+## 🧠 Mental Model
+
+Think of `pageFunctions` as a global event queue for page logic. Instead of scattering `DOMContentLoaded`, `setTimeout`, or brittle `init()` calls everywhere, you declare what needs to run and when, using simple script tags and IDs.
+
+It’s especially valuable when working with:
+
+- Page transitions
+- CMS-powered components
+- Dynamic DOM updates
+- Modular, repeatable components (cards, sliders, tabs, etc)
 
 ---
 
-## 🧩 How It Works
+## 🐞 Debug Mode
 
-### ✅ `addFunction(id, fn, level = 0)`
+`pageFunctions` includes a built-in **debug mode** to help you trace script execution and lifecycle issues.
 
-Registers a uniquely named function at a given "level".
+### ✅ Automatically Enabled on `.webflow.io`
 
-- Replaces previous calls with the same `id`
-- Resets its `.executed` state so it runs again
-- Accepts sync or async functions
+If your site is running on a Webflow staging domain (e.g. `your-site.webflow.io`), debug mode is on by default.
 
-```js
-pageFunctions.addFunction("galleryInit", async () => {
-  await preloadImages();
-  startSlideshow();
-}, 1);
+### 🔍 What It Logs
+
+- Every `addFunction()` registration (ID + level)
+- Each `<script>` execution in `.refresh()`
+- Grouped output during `.runFunctions()` by execution level
+- Any thrown errors in functions or script tags
+
+### 💡 Example Output
+
+```plaintext
+[pageFunctions v0.0.2] Refresh started
+[pageFunctions] (Re)registered function "galleryInit" at level 1
+[pageFunctions v0.0.2] Running level 0 with 2 function(s)
+[pageFunctions v0.0.2] Running level 1 with 1 function(s)
+[pageFunctions] All levels complete.
 ```
 
----
+### 🛠 Enable Manually
 
-### ✅ `runFunctions()`
-
-Executes all **unexecuted** functions, grouped by level in ascending order.
-
-- Automatically skips anything already run
-- Executes functions in parallel per level
-- Waits for async functions to resolve before moving to the next level
-
----
-
-### ✅ `refresh(autoRun = true)`
-
-Finds all new `<script>` tags in the DOM:
-
-- Skips anything already marked `data-page-fn-executed`
-- Skips anything with `data-prevent-refresh`
-- Evaluates valid scripts via `eval()`
-- Then calls `runFunctions()` (unless you pass `false`)
+On production or custom domains, you can force debug mode:
 
 ```js
-pageFunctions.refresh();      // Scan + run
-pageFunctions.refresh(false); // Scan only
+pageFunctions.devMode = true;
 ```
 
----
-
-## 🧠 Design Philosophy
-
-- ✅ **Component-local JS**: Logic stays with layout, not in one giant file
-- ✅ **Single-run guarantee**: No double-attaches or replays
-- ✅ **Webflow-compatible**: All logic works inside HTML embed blocks
-- ✅ **Barba-safe**: Works with async page transitions and dynamic DOM swaps
-- ✅ **Extensible**: Clean base with `run`, `refresh`, and future `.clear()` or `.debug()` options
+This is especially useful when testing transitions or debugging behavior outside Webflow staging.
 
 ---
 
 ## 🔍 Debugging Tips
 
-To inspect what’s registered and what’s run:
-
 ```js
-console.log(Object.keys(pageFunctions.functions)); // all registered IDs
-console.log(Object.keys(pageFunctions.executed));  // those already run
+Object.keys(pageFunctions.functions); // All registered function IDs
+Object.keys(pageFunctions.executed);  // All IDs that have already run
 ```
 
-Enable verbose logs on `.webflow.io` domains by default, or force it manually:
+Use this to verify which functions are ready vs skipped.
 
-```js
-pageFunctions.devMode = true;
+---
+
+## 📂 Example Use Case Structure
+
+```
+Webflow Site/
+├── Pages/
+│   ├── About (has HTML Embed for split text)
+│   ├── Projects (injects cards dynamically)
+│   └── Contact
+├── Scripts/
+│   ├── <head>: Core pageFunctions script
+│   └── </body>: pageFunctions.runFunctions()
 ```
 
 ---
 
 ## 🛠 Version
 
-**`v0.0.2`**  
-Changelog:
-- Auto-run added to `.refresh()`
-- Duplicate `addFunction()` calls reset `.executed`
-- Cleaned up logging and script tag evaluation
+**`v0.0.2`**
 
----
-
-## 📂 Example Directory Structure
-
-You don’t need files, but mentally think of it like:
-
-```
-Webflow Project/
-├── [Page]
-│   ├── [Section]
-│   │   └── <script> → pageFunctions.addFunction(...)
-│   └── ...
-├── Settings/
-│   ├── <head> → core pageFunctions script
-│   └── </body> → pageFunctions.runFunctions()
-```
+- ✅ `refresh()` auto-runs by default
+- ✅ Re-registering resets `.executed` to allow clean re-runs
+- ✅ Developer-first logs, grouped by version and level
