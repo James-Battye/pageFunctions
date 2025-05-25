@@ -1,139 +1,115 @@
 (function (global) {
+  const DEV = window.location.hostname.includes(".webflow.io");
+
   global.pageFunctions = {
-    version: '0.0.2',
+    version: "0.0.3",
     executed: {},
     functions: {},
-    devMode: window.location.hostname.includes('.webflow.io'),
+    levels: {},
+    devMode: DEV,
 
-    // Dev logging tools
     log(...args) {
-      if (this.devMode) console.log('[pageFunctions]', ...args);
-    },
-    group(...args) {
-      if (this.devMode) console.group(`[pageFunctions v${this.version}]`, ...args);
-    },
-    groupEnd() {
-      if (this.devMode) console.groupEnd();
+      if (this.devMode) console.log("[pageFunctions]", ...args);
     },
 
-    /**
-     * (Re)registers a named function and resets execution state
-     */
+    warn(...args) {
+      if (this.devMode) console.warn("[pageFunctions]", ...args);
+    },
+
     addFunction(id, fn, level = 0) {
-      if (typeof id !== 'string' || typeof fn !== 'function') {
-        this.log(`Invalid addFunction call:`, { id, fn });
+      if (typeof id !== "string" || typeof fn !== "function") {
+        this.warn(`Invalid function registration for "${id}"`);
         return;
       }
 
-      this.log(`(Re)registered function "${id}" at level ${level}`);
-      this.functions[id] = { fn, level };
-      this.executed[id] = false; // ✅ Always reset so it's re-run if re-added
-    },
-
-    /**
-     * Runs all unexecuted functions, grouped by level
-     */
-    async runFunctions() {
-      const levels = {};
-
-      for (const id in this.functions) {
-        if (!this.executed[id]) {
-          const { fn, level } = this.functions[id];
-          if (!levels[level]) levels[level] = [];
-          levels[level].push({ id, fn });
+      // Resolve level if it's a function ID string
+      if (typeof level === "string") {
+        const depLevel = this.levels[level];
+        if (typeof depLevel === "number") {
+          level = depLevel + 1;
+        } else {
+          this.warn(`Dependency "${level}" not found. Defaulting "${id}" to level 0.`);
+          level = 0;
         }
       }
 
-      if (Object.keys(levels).length === 0) {
-        this.log('No new functions to run.');
-        return;
-      }
+      // Re-registering a function resets execution state
+      this.functions[id] = { fn, level };
+      this.levels[id] = level;
+      this.executed[id] = false;
 
-      const orderedLevels = Object.keys(levels)
+      this.log(`(Re)registered function "${id}" at level ${level}`);
+    },
+
+    async runFunctions() {
+      const pending = Object.entries(this.functions).filter(
+        ([id]) => !this.executed[id]
+      );
+
+      const grouped = pending.reduce((acc, [id, { fn, level }]) => {
+        if (!acc[level]) acc[level] = [];
+        acc[level].push({ id, fn });
+        return acc;
+      }, {});
+
+      const sortedLevels = Object.keys(grouped)
         .map(Number)
         .sort((a, b) => a - b);
 
-      for (const lvl of orderedLevels) {
-        const group = levels[lvl];
-        this.group(`Running level ${lvl} with ${group.length} function(s)`);
+      for (const level of sortedLevels) {
+        this.log(`Running level ${level} with ${grouped[level].length} function(s)`);
 
-        const promises = group.map(({ id, fn }) => {
-          return new Promise((resolve) => {
-            try {
-              const result = fn();
-              if (result instanceof Promise) {
-                result
-                  .then(() => {
-                    this.executed[id] = true;
-                    resolve();
-                  })
-                  .catch((err) => {
-                    console.error(`[pageFunctions] Error in "${id}":`, err);
-                    resolve();
-                  });
-              } else {
-                this.executed[id] = true;
-                resolve();
-              }
-            } catch (err) {
-              console.error(`[pageFunctions] Error in "${id}":`, err);
-              resolve();
-            }
-          });
+        const executions = grouped[level].map(({ id, fn }) => {
+          try {
+            const result = fn();
+            this.executed[id] = true;
+            return Promise.resolve(result);
+          } catch (e) {
+            this.warn(`Error in "${id}":`, e);
+            this.executed[id] = true;
+            return Promise.resolve(); // Fail gracefully
+          }
         });
 
-        await Promise.all(promises);
-        this.groupEnd();
+        await Promise.all(executions);
       }
 
-      this.log('All levels complete.');
+      this.log("All levels complete.");
     },
 
-    /**
-     * Refreshes <script> tags and optionally runs any new functions
-     * @param {boolean} [autoRun=true] - Whether to run functions automatically
-     */
     refresh(autoRun = true) {
-      this.group('Refresh started');
+      this.log(`Refresh started`);
+      const scripts = Array.from(document.querySelectorAll("script:not([data-page-fn-executed])"));
 
-      const scriptTags = Array.from(
-        document.querySelectorAll('script:not([data-page-fn-executed]):not([data-prevent-refresh])')
-      );
+      scripts.forEach((script, i) => {
+        if (script.dataset.preventRefresh) {
+          this.log(`Skipping <script> [${i}] with data-prevent-refresh`);
+          script.setAttribute("data-page-fn-executed", "true");
+          return;
+        }
 
-      if (!scriptTags.length) {
-        this.log('No new <script> tags found to execute.');
-        this.groupEnd();
-        return;
-      }
+        const code = script.innerHTML.trim();
+        if (!code) {
+          this.log(`Skipping empty <script> [${i}]`);
+          script.setAttribute("data-page-fn-executed", "true");
+          return;
+        }
 
-      scriptTags.forEach((script, i) => {
+        this.log(`Executing <script> [${i}]`);
+        this.log("Code:\n", code);
+
         try {
-          const code = script.innerHTML.trim();
-          if (code.length === 0) {
-            this.log(`Skipping empty <script> [${i}]`);
-            return;
-          }
-
-          this.group(`Executing <script> [${i}]`);
-          this.log('Code:\n', code.length > 200 ? code.slice(0, 200) + '...' : code);
-
-          eval(code);
-
-          script.setAttribute('data-page-fn-executed', 'true');
+          new Function(code)();
+          script.setAttribute("data-page-fn-executed", "true");
           this.log(`✓ Executed <script> [${i}]`);
-          this.groupEnd();
-        } catch (err) {
-          console.error(`[pageFunctions] ✗ Error executing <script> [${i}]:`, err);
-          this.groupEnd();
+        } catch (e) {
+          this.warn(`✗ Error in <script> [${i}]:`, e);
         }
       });
 
-      this.log(`Finished. ${scriptTags.length} script(s) processed.`);
-      this.groupEnd();
+      this.log(`${scripts.length} script(s) processed.`);
 
-      if (autoRun) {
-        this.runFunctions();
-      }
-    },
+      if (autoRun) this.runFunctions();
+    }
   };
 })(window);
