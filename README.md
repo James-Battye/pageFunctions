@@ -14,7 +14,190 @@ Place this in the **Webflow Project Settings → `<head>`**:
 
 ```html
 <script>
-  // Paste the full pageFunctions v0.0.3 script here
+(function (global) {
+  global.pageFunctions = {
+    version: '0.0.2',
+    executed: {},
+    functions: {},
+    initialised: false,
+    devMode: false, //  window.location.hostname.includes('.webflow.io')
+
+    // Dev logging tools
+    log(...args) {
+      if (this.devMode) console.log('[pageFunctions]', ...args);
+    },
+    group(...args) {
+      if (this.devMode) console.group(`[pageFunctions v${this.version}]`, ...args);
+    },
+    groupEnd() {
+      if (this.devMode) console.groupEnd();
+    },
+
+    /**
+     * Resolves a level value, handling both numeric and string references
+     * @param {number|string} level - The level value or reference to another function
+     * @returns {number} The resolved level
+     */
+    resolveLevel(level) {
+      if (typeof level === 'number') return level;
+      if (typeof level === 'string') {
+        const referencedFn = this.functions[level];
+        if (!referencedFn) {
+          this.log(`Warning: Referenced function "${level}" not found, defaulting to level 0`);
+          return 0;
+        }
+        return referencedFn.level + 1;
+      }
+      return 0;
+    },
+
+    /**
+     * (Re)registers a named function and resets execution state
+     */
+    addFunction(id, fn, level = 0) {
+      if (typeof id !== 'string' || typeof fn !== 'function') {
+        this.log(`Invalid addFunction call:`, { id, fn });
+        return;
+      }
+
+      const resolvedLevel = this.resolveLevel(level);
+      this.log(
+        `(Re)registered function "${id}" at level ${resolvedLevel}${typeof level === 'string' ? ` (after "${level}")` : ''}`
+      );
+      this.functions[id] = { fn, level: resolvedLevel };
+      this.executed[id] = false; // ✅ Always reset so it's re-run if re-added
+    },
+
+    /**
+     * Runs all unexecuted functions, grouped by level
+     * @param {HTMLElement} [element] - Optional element to re-execute functions within
+     */
+    async runFunctions(element) {
+      const levels = {};
+
+      if (element) {
+        this.group(
+          `Running functions within element: ${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ''}${element.className ? `.${element.className}` : ''}`
+        );
+      } else {
+        this.group('Running all functions');
+      }
+
+      for (const id in this.functions) {
+        if (!this.executed[id]) {
+          const { fn, level } = this.functions[id];
+
+          // If element is provided, only run functions that were defined within it
+          if (element) {
+            const scripts = element.querySelectorAll('script');
+            let found = false;
+            for (const script of scripts) {
+              if (script.innerHTML.includes(`pageFunctions.addFunction("${id}"`)) {
+                found = true;
+                break;
+              }
+            }
+            if (!found) continue;
+          }
+
+          if (!levels[level]) levels[level] = [];
+          levels[level].push({ id, fn });
+        }
+      }
+
+      if (Object.keys(levels).length === 0) {
+        this.log('No new functions to run.');
+        this.groupEnd();
+        return;
+      }
+
+      const orderedLevels = Object.keys(levels)
+        .map(Number)
+        .sort((a, b) => a - b);
+
+      for (const lvl of orderedLevels) {
+        const group = levels[lvl];
+        this.group(`Running level ${lvl} with ${group.length} function(s)`);
+
+        const promises = group.map(({ id, fn }) => {
+          return new Promise((resolve) => {
+            try {
+              const result = fn();
+              if (result instanceof Promise) {
+                result
+                  .then(() => {
+                    this.executed[id] = true;
+                    resolve();
+                  })
+                  .catch((err) => {
+                    console.error(`[pageFunctions] Error in "${id}":`, err);
+                    resolve();
+                  });
+              } else {
+                this.executed[id] = true;
+                resolve();
+              }
+            } catch (err) {
+              console.error(`[pageFunctions] Error in "${id}":`, err);
+              resolve();
+            }
+          });
+        });
+
+        await Promise.all(promises);
+        this.groupEnd();
+      }
+
+      this.initialised = true;
+      this.log('All levels complete.');
+      this.groupEnd();
+    },
+
+    /**
+     * Refreshes <script> tags and optionally runs any new functions
+     * @param {boolean} [autoRun=true] - Whether to run functions automatically
+     */
+    refresh(autoRun = true, domElement = document) {
+      this.group('Refresh started');
+
+      const scriptTags = Array.from(
+        domElement.querySelectorAll(
+          'script:not([data-page-fn-executed]):not([data-prevent-refresh])'
+        )
+      );
+
+      if (!scriptTags.length) {
+        this.log('No new <script> tags found to execute.');
+        this.groupEnd();
+        return;
+      }
+
+      scriptTags.forEach((script, i) => {
+        try {
+          const code = script.innerHTML.trim();
+          if (code.length === 0) {
+            this.log(`Skipping empty <script> [${i}]`);
+            return;
+          }
+
+          this.group(`Executing <script> [${i}]`);
+          this.log('Code:\n', code.length > 200 ? code.slice(0, 200) + '...' : code);
+
+          eval(code);
+
+          this.log(`✓ Executed <script> [${i}]`);
+          this.groupEnd();
+        } catch (err) {
+          console.error(`[pageFunctions] ✗ Error executing <script> [${i}]:`, err);
+          this.groupEnd();
+        }
+      });
+
+      this.log(`Finished. ${scriptTags.length} script(s) processed.`);
+      this.groupEnd();
+    },
+  };
+})(window);
 </script>
 ```
 
@@ -120,20 +303,6 @@ pageFunctions.refresh(false); // Scan only
 
 ---
 
-### Prevent Scripts from Re-running
-
-You can prevent a script from being executed again during `refresh()` by using:
-
-```html
-<script data-prevent-refresh>
-  pageFunctions.addFunction("introAnimation", () => {
-    console.log("Runs once only.");
-  }, 0);
-</script>
-```
-
----
-
 ## 🐞 Debug Mode
 
 ### Enabled automatically on `.webflow.io` domains
@@ -165,7 +334,7 @@ Object.keys(pageFunctions.executed);  // See which ones have already run
 
 ## 🛠 Version
 
-**`v0.0.3`**
+**`v0.0.2`**
 
 - ✅ New feature: Named dependency levels (`"afterSomeFunction"`)
 - ✅ Refactored `addFunction()` logic for cleaner level resolution
